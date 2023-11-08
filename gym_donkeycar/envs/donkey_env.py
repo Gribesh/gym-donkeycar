@@ -34,7 +34,7 @@ def supply_defaults(conf: Dict[str, Any]) -> None:
         ("log_level", logging.INFO),
         ("host", "localhost"),
         ("port", 9091),
-        ("steer_limit", 1.0),
+        ("steer_limit", 0.5),
         ("throttle_min", 0.0),
         ("throttle_max", 1.0),
     ]
@@ -134,14 +134,21 @@ class DonkeyEnv(gym.Env):
         for _ in range(self.frame_skip):
             self.viewer.take_action(action)
             observation, reward, done, info = self.viewer.observe()
+
+        if done:
+            self.viewer.take_action(np.array([0, 0]))
+            time.sleep(0.1)
+
         return observation, reward, done, info
 
     def reset(self) -> np.ndarray:
         # Activate hand brake, so the car does not move
         self.viewer.handler.send_control(0, 0, 1.0)
+        self.viewer.take_action(np.array([0, 0]))
         time.sleep(0.1)
         self.viewer.reset()
         self.viewer.handler.send_control(0, 0, 1.0)
+        self.viewer.take_action(np.array([0, 0]))
         time.sleep(0.1)
         observation, reward, done, info = self.viewer.observe()
         return observation

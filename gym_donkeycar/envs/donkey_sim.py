@@ -174,6 +174,10 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.vel_y = 0.0
         self.vel_z = 0.0
         self.lidar = []
+        self.n_steps_low_speed = 0
+        self.min_speed = 1.0
+        self.n_steps = 0
+        self.n_consecutive_no_speed = 0
 
         # car in Unity lefthand coordinate system: roll is Z, pitch is X and yaw is Y
         self.roll = 0.0
@@ -212,7 +216,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
             self.starting_line_index = message["starting_line_index"]
         elif self.starting_line_index == message["starting_line_index"]:
             time_at_crossing = message["timeStamp"]
-            self.last_lap_time = float(time_at_crossing - self.current_lap_time)
+            self.last_lap_time = float(
+                time_at_crossing - self.current_lap_time)
             self.current_lap_time = time_at_crossing
             self.lap_count += 1
             lap_msg = f"New lap time: {round(self.last_lap_time, 2)} seconds"
@@ -228,7 +233,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
 
     def send_config(self, conf: Dict[str, Any]) -> None:
         if "degPerSweepInc" in conf:
-            raise ValueError("LIDAR config keys were renamed to use snake_case name instead of CamelCase")
+            raise ValueError(
+                "LIDAR config keys were renamed to use snake_case name instead of CamelCase")
 
         logger.info("sending car config.")
         # both ways work, car_config shouldn't interfere with other config, so keeping the two alternative
@@ -284,7 +290,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
 
         if "lidar_config" in conf.keys():
             if "degPerSweepInc" in conf:
-                raise ValueError("LIDAR config keys were renamed to use snake_case name instead of CamelCase")
+                raise ValueError(
+                    "LIDAR config keys were renamed to use snake_case name instead of CamelCase")
 
             lidar_config = self.extract_keys(
                 conf["lidar_config"],
@@ -425,6 +432,9 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.lidar = []
         self.current_lap_time = 0.0
         self.last_lap_time = 0.0
+        self.n_steps_low_speed = 0
+        self.n_steps = 0
+        self.n_consecutive_no_speed = 0
         self.lap_count = 0
 
         # car
@@ -436,6 +446,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         return self.camera_img_size
 
     def take_action(self, action: np.ndarray) -> None:
+        self.n_steps += 1
         self.send_control(action[0], action[1])
 
     def observe(self) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
@@ -485,10 +496,13 @@ class DonkeyUnitySimHandler(IMesgHandler):
     def calc_reward(self, done: bool) -> float:
         # Normalization factor, real max speed is around 30
         # but only attained on a long straight line
-        # max_speed = 10
+        max_speed = 10
 
         if done:
-            return -1.0
+            return -15 - 2 * self.speed / max_speed
+
+        if self.hit != "none":
+            return -15 - 2 * self.speed / max_speed
 
         if self.cte > self.max_cte:
             return -1.0
@@ -498,11 +512,12 @@ class DonkeyUnitySimHandler(IMesgHandler):
             return -2.0
 
         # going fast close to the center of lane yeilds best reward
-        if self.forward_vel > 0.0:
-            return (1.0 - (math.fabs(self.cte) / self.max_cte)) * self.forward_vel
+        # if self.forward_vel > 0.0:
+        #     return (1.0 - (math.fabs(self.cte) / self.max_cte)) * self.forward_vel
 
-        # in reverse, reward doesn't have centering term as this can result in some exploits
-        return self.forward_vel
+        # # in reverse, reward doesn't have centering term as this can result in some exploits
+        # return self.forward_vel
+        return (1.0 - (math.fabs(self.cte) / self.max_cte)) * self.speed
 
     # ------ Socket interface ----------- #
 
@@ -527,13 +542,15 @@ class DonkeyUnitySimHandler(IMesgHandler):
         if "speed" in message:
             self.speed = message["speed"]
 
-        e = [self.pitch * np.pi / 180.0, self.yaw * np.pi / 180.0, self.roll * np.pi / 180.0]
+        e = [self.pitch * np.pi / 180.0, self.yaw *
+             np.pi / 180.0, self.roll * np.pi / 180.0]
         q = euler_to_quat(e)
 
         forward = rotate_vec(q, [0.0, 0.0, 1.0])
 
         # dot
-        self.forward_vel = forward[0] * self.vel_x + forward[1] * self.vel_y + forward[2] * self.vel_z
+        self.forward_vel = forward[0] * self.vel_x + \
+            forward[1] * self.vel_y + forward[2] * self.vel_z
 
         if "gyro_x" in message:
             self.gyro_x = message["gyro_x"]
@@ -619,6 +636,13 @@ class DonkeyUnitySimHandler(IMesgHandler):
             logger.debug("disqualified")
             self.over = True
 
+        if np.abs(self.speed) < 1 and self.n_steps > 100:
+            self.n_consecutive_no_speed += 1
+            if self.n_consecutive_no_speed > 60:
+                self.over = True
+        else:
+            self.n_consecutive_no_speed = 0
+
         # Disable reset
         if os.environ.get("RACE") == "True":
             self.over = False
@@ -642,7 +666,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
             if self.SceneToLoad in names:
                 self.send_load_scene(self.SceneToLoad)
             else:
-                raise ValueError(f"Scene name {self.SceneToLoad} not in scene list {names}")
+                raise ValueError(
+                    f"Scene name {self.SceneToLoad} not in scene list {names}")
 
     def send_control(self, steer: float, throttle: float, brake: float = 0.0) -> None:
         """
@@ -828,7 +853,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
     def process_lidar_packet(self, lidar_info: List[Dict[str, float]]) -> np.ndarray:
         point_per_sweep = int(360 / self.lidar_deg_per_sweep_inc)
         points_num = round(abs(self.lidar_num_sweep_levels * point_per_sweep))
-        reconstructed_lidar_info = [-1 for _ in range(points_num)]  # we chose -1 to be the "None" value
+        # we chose -1 to be the "None" value
+        reconstructed_lidar_info = [-1 for _ in range(points_num)]
 
         if lidar_info is not None:
             for point in lidar_info:
@@ -839,7 +865,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
                 x_index = round(abs(rx / self.lidar_deg_per_sweep_inc))
                 y_index = round(abs(ry / self.lidar_deg_ang_delta))
 
-                reconstructed_lidar_info[point_per_sweep * y_index + x_index] = d
+                reconstructed_lidar_info[point_per_sweep *
+                                         y_index + x_index] = d
 
         return np.array(reconstructed_lidar_info)
 
