@@ -177,6 +177,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.n_steps_low_speed = 0
         self.min_speed = 1.0
         self.n_steps = 0
+        self.n_consecutive_no_speed = 0
 
         # car in Unity lefthand coordinate system: roll is Z, pitch is X and yaw is Y
         self.roll = 0.0
@@ -433,6 +434,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.last_lap_time = 0.0
         self.n_steps_low_speed = 0
         self.n_steps = 0
+        self.n_consecutive_no_speed = 0
         self.lap_count = 0
 
         # car
@@ -444,8 +446,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
         return self.camera_img_size
 
     def take_action(self, action: np.ndarray) -> None:
-        self.send_control(action[0], action[1])
         self.n_steps += 1
+        self.send_control(action[0], action[1])
 
     def observe(self) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         while self.last_received == self.time_received:
@@ -494,10 +496,13 @@ class DonkeyUnitySimHandler(IMesgHandler):
     def calc_reward(self, done: bool) -> float:
         # Normalization factor, real max speed is around 30
         # but only attained on a long straight line
-        # max_speed = 10
+        max_speed = 10
 
         if done:
-            return -1.0
+            return -15 - 2 * self.speed / max_speed
+
+        if self.hit != "none":
+            return -15 - 2 * self.speed / max_speed
 
         if self.cte > self.max_cte:
             return -1.0
@@ -507,11 +512,12 @@ class DonkeyUnitySimHandler(IMesgHandler):
             return -2.0
 
         # going fast close to the center of lane yeilds best reward
-        if self.forward_vel > 0.0:
-            return (1.0 - (math.fabs(self.cte) / self.max_cte)) * self.forward_vel
+        # if self.forward_vel > 0.0:
+        #     return (1.0 - (math.fabs(self.cte) / self.max_cte)) * self.forward_vel
 
-        # in reverse, reward doesn't have centering term as this can result in some exploits
-        return self.forward_vel
+        # # in reverse, reward doesn't have centering term as this can result in some exploits
+        # return self.forward_vel
+        return (1.0 - (math.fabs(self.cte) / self.max_cte)) * self.speed
 
     # ------ Socket interface ----------- #
 
@@ -630,12 +636,12 @@ class DonkeyUnitySimHandler(IMesgHandler):
             logger.debug("disqualified")
             self.over = True
 
-        if abs(self.speed) < self.min_speed and self.n_steps > 100:
-            self.n_steps_low_speed += 1
-            if self.n_steps_low_speed > 60:
+        if np.abs(self.speed) < 1 and self.n_steps > 100:
+            self.n_consecutive_no_speed += 1
+            if self.n_consecutive_no_speed > 60:
                 self.over = True
         else:
-            self.n_steps_low_speed = 0
+            self.n_consecutive_no_speed = 0
 
         # Disable reset
         if os.environ.get("RACE") == "True":
